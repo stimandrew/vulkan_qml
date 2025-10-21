@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/">
+        <file>main.qml</file>
+        <file>squircle.vert.spv</file>
+        <file>squircle.frag.spv</file>
+        <file>textures/metalplate.png</file>
+    </qresource>
+</RCC>
