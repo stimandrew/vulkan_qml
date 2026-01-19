@@ -31,7 +31,7 @@ function(compile_shader SHADER_NAME SHADER_TYPE)
     if(EXISTS ${INPUT_FILE})
         add_custom_command(
             OUTPUT ${OUTPUT_FILE}
-            COMMAND ${GLSLC_EXECUTABLE} -o ${OUTPUT_FILE} ${INPUT_FILE}
+            COMMAND ${GLSLC_EXECUTABLE} -V -o ${OUTPUT_FILE} ${INPUT_FILE}
             DEPENDS ${INPUT_FILE}
             COMMENT "Compiling ${SHADER_NAME}.${SHADER_TYPE}"
             VERBATIM
