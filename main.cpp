@@ -6,7 +6,6 @@
 #include <QQmlApplicationEngine>
 #include <QVulkanInstance>
 #include <QDebug>
-#include "vulkanquickwindow.h"
 #include "vulkancube.h"
 
 int main(int argc, char **argv)
@@ -37,7 +36,6 @@ int main(int argc, char **argv)
 
     // Регистрируем QML типы
     QQmlApplicationEngine engine;
-    qmlRegisterType<VulkanQuickWindow>("VulkanUnderQML", 1, 0, "VulkanQuickWindow");
     qmlRegisterType<VulkanCube>("VulkanUnderQML", 1, 0, "VulkanCube");
 
     // Загружаем QML
