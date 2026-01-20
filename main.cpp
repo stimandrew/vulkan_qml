@@ -8,7 +8,6 @@
 #include <QDebug>
 #include "vulkanquickwindow.h"
 #include "vulkancube.h"
-#include "vulkansquircle.h"
 
 int main(int argc, char **argv)
 {
@@ -40,7 +39,6 @@ int main(int argc, char **argv)
     QQmlApplicationEngine engine;
     qmlRegisterType<VulkanQuickWindow>("VulkanUnderQML", 1, 0, "VulkanQuickWindow");
     qmlRegisterType<VulkanCube>("VulkanUnderQML", 1, 0, "VulkanCube");
-    qmlRegisterType<VulkanSquircle>("VulkanUnderQML", 1, 0, "VulkanSquircle");
 
     // Загружаем QML
     engine.load(QUrl("qrc:///main.qml"));

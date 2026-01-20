@@ -68,15 +68,6 @@ foreach(SHADER_PATH ${FRAGMENT_SHADERS})
     compile_shader(${SHADER_NAME} frag)
 endforeach()
 
-# Специально для шейдеров из примера
-if(EXISTS ${SHADER_SOURCE_DIR}/squircle.vert)
-    compile_shader(squircle vert)
-endif()
-
-if(EXISTS ${SHADER_SOURCE_DIR}/squircle.frag)
-    compile_shader(squircle frag)
-endif()
-
 # Компилируем шейдеры для куба
 if(EXISTS ${SHADER_SOURCE_DIR}/cube.vert)
     compile_shader(cube vert)
@@ -93,7 +84,6 @@ endif()
 
 qt_add_executable(vulkanunderqml WIN32 MACOSX_BUNDLE
     main.cpp
-    vulkansquircle.cpp vulkansquircle.h
     vulkancube.cpp vulkancube.h
 )
 
@@ -118,8 +108,6 @@ qt_add_qml_module(vulkanunderqml
     QML_FILES
         main.qml
     RESOURCES
-        squircle.frag.spv
-        squircle.vert.spv
         cube.frag.spv
         cube.vert.spv
     RESOURCE_PREFIX /

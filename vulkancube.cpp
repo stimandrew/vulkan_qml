@@ -109,7 +109,7 @@ void VulkanCube::handleWindowChanged(QQuickWindow *win)
     if (win) {
         connect(win, &QQuickWindow::beforeSynchronizing, this, &VulkanCube::sync, Qt::DirectConnection);
         connect(win, &QQuickWindow::sceneGraphInvalidated, this, &VulkanCube::cleanup, Qt::DirectConnection);
-        win->setColor(Qt::black);
+        win->setColor(Qt::lightGray);
     }
 }
 
