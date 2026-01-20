@@ -126,6 +126,7 @@ qt_add_qml_module(vulkanunderqml
     NO_RESOURCE_TARGET_PATH
     SOURCES vulkancube.h vulkancube.cpp
     RESOURCES textures/metalplate01_rgba.png
+    SOURCES vulkanquickwindow.h vulkanquickwindow.cpp
 )
 
 install(TARGETS vulkanunderqml
