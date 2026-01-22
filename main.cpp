@@ -7,6 +7,7 @@
 #include <QVulkanInstance>
 #include <QDebug>
 #include "vulkancube.h"
+#include "vulkanbackground.h"
 
 int main(int argc, char **argv)
 {
@@ -37,6 +38,7 @@ int main(int argc, char **argv)
     // Регистрируем QML типы
     QQmlApplicationEngine engine;
     qmlRegisterType<VulkanCube>("VulkanUnderQML", 1, 0, "VulkanCube");
+    qmlRegisterType<VulkanBackground>("VulkanUnderQML", 1, 0, "VulkanBackground");
 
     // Загружаем QML
     engine.load(QUrl("qrc:///main.qml"));

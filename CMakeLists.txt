@@ -110,11 +110,17 @@ qt_add_qml_module(vulkanunderqml
     RESOURCES
         cube.frag.spv
         cube.vert.spv
+        background.frag.spv
+        background.vert.spv
     RESOURCE_PREFIX /
     NO_RESOURCE_TARGET_PATH
     SOURCES vulkancube.h vulkancube.cpp
     RESOURCES textures/metalplate01_rgba.png
+                textures/background.jpg
     SOURCES
+    SOURCES
+    QML_FILES
+    SOURCES vulkanbackground.h vulkanbackground.cpp
 )
 
 install(TARGETS vulkanunderqml

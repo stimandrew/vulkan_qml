@@ -14,12 +14,26 @@ Window {
     title: "Vulkan QML"
     color: "white"
 
+    VulkanBackground {
+        id: background
+        anchors.fill: parent
+        z: -1 // Помещаем фон за кубом
+
+        SequentialAnimation on t {
+            NumberAnimation { to: 1; duration: 10000; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 0; duration: 10000; easing.type: Easing.InOutQuad }
+            loops: Animation.Infinite
+            running: true
+        }
+    }
+
     // Вращающийся куб
     VulkanCube {
         id: cube
         anchors.centerIn: parent
         width: 400
         height: 400
+        z: 1
 
         SequentialAnimation on t {
             NumberAnimation { to: 1; duration: 5000; easing.type: Easing.InOutQuad }

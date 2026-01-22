@@ -1,7 +1,7 @@
-// Copyright (C) 2021 The Qt Company Ltd.
+// Copyright (C) 2023 The Qt Company Ltd.
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR BSD-3-Clause
 
-#include "vulkancube.h"
+#include "vulkanbackground.h"
 #include <QtCore/QRunnable>
 #include <QtQuick/QQuickWindow>
 
@@ -12,13 +12,12 @@
 #include <QMatrix4x4>
 #include <QVector3D>
 #include <QImage>
-#include <QFileInfo>
 
-class CubeRenderer : public QObject
+class BackgroundRenderer : public QObject
 {
     Q_OBJECT
 public:
-    ~CubeRenderer();
+    ~BackgroundRenderer();
 
     void setT(qreal t) { m_t = t; }
     void setViewportSize(const QSize &size) { m_viewportSize = size; }
@@ -89,12 +88,12 @@ private:
     uint32_t m_indexCount = 0;
 };
 
-VulkanCube::VulkanCube()
+VulkanBackground::VulkanBackground()
 {
-    connect(this, &QQuickItem::windowChanged, this, &VulkanCube::handleWindowChanged);
+    connect(this, &QQuickItem::windowChanged, this, &VulkanBackground::handleWindowChanged);
 }
 
-void VulkanCube::setT(qreal t)
+void VulkanBackground::setT(qreal t)
 {
     if (t == m_t)
         return;
@@ -104,40 +103,38 @@ void VulkanCube::setT(qreal t)
         window()->update();
 }
 
-void VulkanCube::handleWindowChanged(QQuickWindow *win)
+void VulkanBackground::handleWindowChanged(QQuickWindow *win)
 {
     if (win) {
-        connect(win, &QQuickWindow::beforeSynchronizing, this, &VulkanCube::sync, Qt::DirectConnection);
-        connect(win, &QQuickWindow::sceneGraphInvalidated, this, &VulkanCube::cleanup, Qt::DirectConnection);
-        win->setColor(Qt::lightGray);
+        connect(win, &QQuickWindow::beforeSynchronizing, this, &VulkanBackground::sync, Qt::DirectConnection);
+        connect(win, &QQuickWindow::sceneGraphInvalidated, this, &VulkanBackground::cleanup, Qt::DirectConnection);
     }
 }
 
-void VulkanCube::cleanup()
+void VulkanBackground::cleanup()
 {
     delete m_renderer;
     m_renderer = nullptr;
 }
 
-class CubeCleanupJob : public QRunnable
+class BackgroundCleanupJob : public QRunnable
 {
 public:
-    CubeCleanupJob(CubeRenderer *renderer) : m_renderer(renderer) { }
+    BackgroundCleanupJob(BackgroundRenderer *renderer) : m_renderer(renderer) { }
     void run() override { delete m_renderer; }
 private:
-    CubeRenderer *m_renderer;
+    BackgroundRenderer *m_renderer;
 };
 
-void VulkanCube::releaseResources()
+void VulkanBackground::releaseResources()
 {
-    window()->scheduleRenderJob(new CubeCleanupJob(m_renderer), QQuickWindow::BeforeSynchronizingStage);
+    window()->scheduleRenderJob(new BackgroundCleanupJob(m_renderer), QQuickWindow::BeforeSynchronizingStage);
     m_renderer = nullptr;
 }
 
-CubeRenderer::~CubeRenderer()
+BackgroundRenderer::~BackgroundRenderer()
 {
-
-    qDebug("cube cleanup");
+    qDebug("background cleanup");
     if (!m_devFuncs)
         return;
 
@@ -159,10 +156,10 @@ CubeRenderer::~CubeRenderer()
     m_devFuncs->vkDestroyBuffer(m_dev, m_ubuf, nullptr);
     m_devFuncs->vkFreeMemory(m_dev, m_ubufMem, nullptr);
 
-    qDebug("cube released");
+    qDebug("background released");
 }
 
-void CubeRenderer::destroyTexture()
+void BackgroundRenderer::destroyTexture()
 {
     if (m_texture.sampler != VK_NULL_HANDLE) {
         m_devFuncs->vkDestroySampler(m_dev, m_texture.sampler, nullptr);
@@ -190,19 +187,20 @@ void CubeRenderer::destroyTexture()
     }
 }
 
-void VulkanCube::sync()
+void VulkanBackground::sync()
 {
     if (!m_renderer) {
-        m_renderer = new CubeRenderer;
-        connect(window(), &QQuickWindow::beforeRendering, m_renderer, &CubeRenderer::frameStart, Qt::DirectConnection);
-        connect(window(), &QQuickWindow::beforeRenderPassRecording, m_renderer, &CubeRenderer::mainPassRecordingStart, Qt::DirectConnection);
+        m_renderer = new BackgroundRenderer;
+        // Рисуем фон ДО куба
+        connect(window(), &QQuickWindow::beforeRendering, m_renderer, &BackgroundRenderer::frameStart, Qt::DirectConnection);
+        connect(window(), &QQuickWindow::beforeRenderPassRecording, m_renderer, &BackgroundRenderer::mainPassRecordingStart, Qt::DirectConnection);
     }
     m_renderer->setViewportSize(window()->size() * window()->devicePixelRatio());
     m_renderer->setT(m_t);
     m_renderer->setWindow(window());
 }
 
-void CubeRenderer::frameStart()
+void BackgroundRenderer::frameStart()
 {
     QSGRendererInterface *rif = m_window->rendererInterface();
     Q_ASSERT(rif->graphicsApi() == QSGRendererInterface::Vulkan);
@@ -216,69 +214,28 @@ void CubeRenderer::frameStart()
         init(m_window->graphicsStateInfo().framesInFlight);
 }
 
-// Вершины куба с позицией, текстурными координатами и нормалями
-struct Vertex {
+// Вершины для фона (большой квадрат на расстоянии 300 метров)
+struct BackgroundVertex {
     float pos[3];
     float texCoord[2];
-    float normal[3];
 };
 
-static const Vertex vertices[] = {
-    // Передняя грань (Z+)
-    {{-1.0f, -1.0f, 1.0f}, {0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
-    {{1.0f, -1.0f, 1.0f}, {1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
-    {{1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
-    {{-1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
-
-    // Задняя грань (Z-)
-    {{1.0f, -1.0f, -1.0f}, {0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
-    {{-1.0f, -1.0f, -1.0f}, {1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
-    {{-1.0f, 1.0f, -1.0f}, {1.0f, 1.0f}, {0.0f, 0.0f, -1.0f}},
-    {{1.0f, 1.0f, -1.0f}, {0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}},
-
-    // Левая грань (X-)
-    {{-1.0f, -1.0f, -1.0f}, {0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}},
-    {{-1.0f, -1.0f, 1.0f}, {1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}},
-    {{-1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}},
-    {{-1.0f, 1.0f, -1.0f}, {0.0f, 1.0f}, {-1.0f, 0.0f, 0.0f}},
-
-    // Правая грань (X+)
-    {{1.0f, -1.0f, 1.0f}, {0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
-    {{1.0f, -1.0f, -1.0f}, {1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
-    {{1.0f, 1.0f, -1.0f}, {1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}},
-    {{1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}},
-
-    // Верхняя грань (Y+)
-    {{-1.0f, 1.0f, 1.0f}, {0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-    {{1.0f, 1.0f, 1.0f}, {1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
-    {{1.0f, 1.0f, -1.0f}, {1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
-    {{-1.0f, 1.0f, -1.0f}, {0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}},
-
-    // Нижняя грань (Y-)
-    {{-1.0f, -1.0f, -1.0f}, {0.0f, 0.0f}, {0.0f, -1.0f, 0.0f}},
-    {{1.0f, -1.0f, -1.0f}, {1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}},
-    {{1.0f, -1.0f, 1.0f}, {1.0f, 1.0f}, {0.0f, -1.0f, 0.0f}},
-    {{-1.0f, -1.0f, 1.0f}, {0.0f, 1.0f}, {0.0f, -1.0f, 0.0f}}
+// Создаем большой квадрат для фона
+static const BackgroundVertex backgroundVertices[] = {
+    // Покрывает все поле зрения
+    {{-500.0f, -500.0f, -300.0f}, {0.0f, 1.0f}},
+    {{500.0f, -500.0f, -300.0f}, {1.0f, 1.0f}},
+    {{500.0f, 500.0f, -300.0f}, {1.0f, 0.0f}},
+    {{-500.0f, 500.0f, -300.0f}, {0.0f, 0.0f}}
 };
 
-static const uint16_t indices[] = {
-    // Передняя грань
-    0, 1, 2, 2, 3, 0,
-    // Задняя грань
-    4, 5, 6, 6, 7, 4,
-    // Левая грань
-    8, 9, 10, 10, 11, 8,
-    // Правая грань
-    12, 13, 14, 14, 15, 12,
-    // Верхняя грань
-    16, 17, 18, 18, 19, 16,
-    // Нижняя грань
-    20, 21, 22, 22, 23, 20
+static const uint16_t backgroundIndices[] = {
+    0, 1, 2, 2, 3, 0
 };
 
-const int UBUF_SIZE = sizeof(float) * 16 * 3 + sizeof(float); // 3 матрицы 4x4 + время
+const int BACKGROUND_UBUF_SIZE = sizeof(float) * 16 * 3 + sizeof(float);
 
-void CubeRenderer::mainPassRecordingStart()
+void BackgroundRenderer::mainPassRecordingStart()
 {
     const QQuickWindow::GraphicsStateInfo &stateInfo(m_window->graphicsStateInfo());
     QSGRendererInterface *rif = m_window->rendererInterface();
@@ -290,32 +247,26 @@ void CubeRenderer::mainPassRecordingStart()
     if (err != VK_SUCCESS || !p)
         qFatal("Failed to map uniform buffer memory: %d", err);
 
-    // Матрицы для 3D преобразований с вращением
+    // Для фона используем только видовую и проекционную матрицы
+    // Модельная матрица - единичная, так как фон статичен
     QMatrix4x4 model;
-
-    // Сначала перемещаем куб в нужное положение
-    model.translate(0.0f, 0.0f, -5.0f); // Отодвигаем куб
-
-    // Затем применяем вращение вокруг своей оси
-    float angle = m_t * 360.0f; // Полный оборот за 1 секунду
-    model.rotate(angle, QVector3D(1.0f, 0.0f, 0.0f)); // Вращение вокруг X
-    model.rotate(angle * 0.7f, QVector3D(0.0f, 0.0f, 1.0f)); // Вращение вокруг Z
+    model.setToIdentity();
 
     QMatrix4x4 view;
-    // Камера смотрит на куб
-    view.lookAt(QVector3D(0.0f, 0.0f, 1.0f),  // позиция камеры (смотрим спереди)
-                QVector3D(0.0f, 0.0f, 0.0f),  // цель (центр сцены)
+    // Та же камера, что и для куба
+    view.lookAt(QVector3D(0.0f, 0.0f, 1.0f),  // позиция камеры
+                QVector3D(0.0f, 0.0f, 0.0f),  // цель
                 QVector3D(0.0f, 1.0f, 0.0f)); // вектор "вверх"
 
     QMatrix4x4 proj;
-    proj.perspective(60.0f, m_viewportSize.width() / (float)m_viewportSize.height(), 0.1f, 100.0f);
+    proj.perspective(60.0f, m_viewportSize.width() / (float)m_viewportSize.height(), 0.1f, 1000.0f);
 
-    // Копируем матрицы и время в uniform buffer
+    // Копируем матрицы в uniform buffer
     float *data = static_cast<float*>(p);
     memcpy(data, model.constData(), 16 * sizeof(float));
     memcpy(data + 16, view.constData(), 16 * sizeof(float));
     memcpy(data + 32, proj.constData(), 16 * sizeof(float));
-    data[48] = m_t * 10.0f; // Ускоряем анимацию
+    data[48] = m_t; // Время для возможных анимаций
 
     m_devFuncs->vkUnmapMemory(m_dev, m_ubufMem);
 
@@ -335,6 +286,11 @@ void CubeRenderer::mainPassRecordingStart()
     m_devFuncs->vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1,
                                         &m_ubufDescriptor, 1, &dynamicOffset);
 
+    // Устанавливаем depth test чтобы фон был позади куба
+    m_devFuncs->vkCmdSetDepthTestEnable(cb, VK_TRUE);
+    m_devFuncs->vkCmdSetDepthCompareOp(cb, VK_COMPARE_OP_LESS_OR_EQUAL);
+    m_devFuncs->vkCmdSetDepthWriteEnable(cb, VK_FALSE); // Не записываем в буфер глубины
+
     VkViewport vp = { 0, 0, float(m_viewportSize.width()), float(m_viewportSize.height()), 0.0f, 1.0f };
     m_devFuncs->vkCmdSetViewport(cb, 0, 1, &vp);
     VkRect2D scissor = { { 0, 0 }, { uint32_t(m_viewportSize.width()), uint32_t(m_viewportSize.height()) } };
@@ -345,14 +301,14 @@ void CubeRenderer::mainPassRecordingStart()
     m_window->endExternalCommands();
 }
 
-void CubeRenderer::prepareShader(Stage stage)
+void BackgroundRenderer::prepareShader(Stage stage)
 {
     QString filename;
     if (stage == VertexStage) {
-        filename = QLatin1String(":/cube.vert.spv");
+        filename = QLatin1String(":/background.vert.spv");
     } else {
         Q_ASSERT(stage == FragmentStage);
-        filename = QLatin1String(":/cube.frag.spv");
+        filename = QLatin1String(":/background.frag.spv");
     }
     QFile f(filename);
     if (!f.open(QIODevice::ReadOnly))
@@ -374,7 +330,7 @@ static inline VkDeviceSize aligned(VkDeviceSize v, VkDeviceSize byteAlign)
     return (v + byteAlign - 1) & ~(byteAlign - 1);
 }
 
-void CubeRenderer::transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout)
+void BackgroundRenderer::transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout)
 {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -415,10 +371,10 @@ void CubeRenderer::transitionImageLayout(VkCommandBuffer commandBuffer, VkImage 
         0, nullptr,
         0, nullptr,
         1, &barrier
-    );
+        );
 }
 
-void CubeRenderer::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
+void BackgroundRenderer::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
 {
     VkBufferImageCopy region{};
     region.bufferOffset = 0;
@@ -434,22 +390,25 @@ void CubeRenderer::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buf
     m_devFuncs->vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
-void CubeRenderer::loadTexture()
+void BackgroundRenderer::loadTexture()
 {
-    // Загружаем текстуру из файла
-    QImage image(":/textures/metalplate01_rgba.png");
-    qDebug() << image.isNull();
+    // Загружаем текстуру фона (JPG)
+    QImage image(":/textures/background.jpg");
     if (image.isNull()) {
-        // Если текстура не загружена, создаем простую текстуру программно
-        image = QImage(256, 256, QImage::Format_RGBA8888);
+        // Если текстура не загружена, создаем градиентную текстуру
+        image = QImage(1024, 1024, QImage::Format_RGBA8888);
         for (int y = 0; y < image.height(); ++y) {
             for (int x = 0; x < image.width(); ++x) {
                 QColor color;
-                if ((x / 32 + y / 32) % 2 == 0) {
-                    color = QColor(0, 255, 255); // Cornflower blue
-                } else {
-                    color = QColor(255, 0, 0); // White
-                }
+                float fx = x / float(image.width());
+                float fy = y / float(image.height());
+
+                // Создаем градиент от синего к черному
+                int r = int(30 * (1.0f - fx));
+                int g = int(60 * (1.0f - fy));
+                int b = int(120 * (0.5f + 0.5f * sin(fx * 3.14f)));
+
+                color = QColor(r, g, b);
                 image.setPixelColor(x, y, color);
             }
         }
@@ -608,7 +567,7 @@ void CubeRenderer::loadTexture()
         qFatal("Failed to create texture sampler: %d", err);
 }
 
-void CubeRenderer::init(int framesInFlight)
+void BackgroundRenderer::init(int framesInFlight)
 {
     Q_ASSERT(framesInFlight <= 3);
     m_initialized = true;
@@ -642,8 +601,7 @@ void CubeRenderer::init(int framesInFlight)
 
     VkBufferCreateInfo bufferInfo;
     memset(&bufferInfo, 0, sizeof(bufferInfo));
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = sizeof(vertices);
+    bufferInfo.size = sizeof(backgroundVertices);
     bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     VkResult err = m_devFuncs->vkCreateBuffer(m_dev, &bufferInfo, nullptr, &m_vbuf);
     if (err != VK_SUCCESS)
@@ -682,11 +640,11 @@ void CubeRenderer::init(int framesInFlight)
     err = m_devFuncs->vkMapMemory(m_dev, m_vbufMem, 0, bufferInfo.size, 0, &p);
     if (err != VK_SUCCESS)
         qFatal("Failed to map vertex buffer memory: %d", err);
-    memcpy(p, vertices, bufferInfo.size);
+    memcpy(p, backgroundVertices, bufferInfo.size);
     m_devFuncs->vkUnmapMemory(m_dev, m_vbufMem);
 
     // Index buffer
-    bufferInfo.size = sizeof(indices);
+    bufferInfo.size = sizeof(backgroundIndices);
     bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     err = m_devFuncs->vkCreateBuffer(m_dev, &bufferInfo, nullptr, &m_ibuf);
     if (err != VK_SUCCESS)
@@ -718,14 +676,14 @@ void CubeRenderer::init(int framesInFlight)
     err = m_devFuncs->vkMapMemory(m_dev, m_ibufMem, 0, bufferInfo.size, 0, &p);
     if (err != VK_SUCCESS)
         qFatal("Failed to map index buffer memory: %d", err);
-    memcpy(p, indices, bufferInfo.size);
+    memcpy(p, backgroundIndices, bufferInfo.size);
     m_devFuncs->vkUnmapMemory(m_dev, m_ibufMem);
 
-    m_indexCount = sizeof(indices) / sizeof(uint16_t);
+    m_indexCount = sizeof(backgroundIndices) / sizeof(uint16_t);
 
     // Uniform buffer
     const VkDeviceSize ubufAlign = physDevProps.limits.minUniformBufferOffsetAlignment;
-    m_allocPerUbuf = aligned(UBUF_SIZE, ubufAlign);
+    m_allocPerUbuf = aligned(BACKGROUND_UBUF_SIZE, ubufAlign);
     bufferInfo.size = m_allocPerUbuf * framesInFlight;
     bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     err = m_devFuncs->vkCreateBuffer(m_dev, &bufferInfo, nullptr, &m_ubuf);
@@ -818,7 +776,7 @@ void CubeRenderer::init(int framesInFlight)
     VkDescriptorBufferInfo bufferInfoDesc;
     bufferInfoDesc.buffer = m_ubuf;
     bufferInfoDesc.offset = 0;
-    bufferInfoDesc.range = UBUF_SIZE;
+    bufferInfoDesc.range = BACKGROUND_UBUF_SIZE;
 
     VkDescriptorImageInfo imageInfo;
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -887,29 +845,25 @@ void CubeRenderer::init(int framesInFlight)
 
     VkVertexInputBindingDescription vertexBindingDesc;
     vertexBindingDesc.binding = 0;
-    vertexBindingDesc.stride = sizeof(Vertex);
+    vertexBindingDesc.stride = sizeof(BackgroundVertex);
     vertexBindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription vertexAttrDesc[3];
+    VkVertexInputAttributeDescription vertexAttrDesc[2];
     vertexAttrDesc[0].location = 0;
     vertexAttrDesc[0].binding = 0;
     vertexAttrDesc[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    vertexAttrDesc[0].offset = offsetof(Vertex, pos);
+    vertexAttrDesc[0].offset = offsetof(BackgroundVertex, pos);
     vertexAttrDesc[1].location = 1;
     vertexAttrDesc[1].binding = 0;
     vertexAttrDesc[1].format = VK_FORMAT_R32G32_SFLOAT;
-    vertexAttrDesc[1].offset = offsetof(Vertex, texCoord);
-    vertexAttrDesc[2].location = 2;
-    vertexAttrDesc[2].binding = 0;
-    vertexAttrDesc[2].format = VK_FORMAT_R32G32B32_SFLOAT;
-    vertexAttrDesc[2].offset = offsetof(Vertex, normal);
+    vertexAttrDesc[1].offset = offsetof(BackgroundVertex, texCoord);
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo;
     memset(&vertexInputInfo, 0, sizeof(vertexInputInfo));
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &vertexBindingDesc;
-    vertexInputInfo.vertexAttributeDescriptionCount = 3;
+    vertexInputInfo.vertexAttributeDescriptionCount = 2;
     vertexInputInfo.pVertexAttributeDescriptions = vertexAttrDesc;
     pipelineInfo.pVertexInputState = &vertexInputInfo;
 
@@ -930,7 +884,7 @@ void CubeRenderer::init(int framesInFlight)
     memset(&rs, 0, sizeof(rs));
     rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.cullMode = VK_CULL_MODE_NONE; // Не отсекаем грани
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1.0f;
     pipelineInfo.pRasterizationState = &rs;
@@ -941,12 +895,13 @@ void CubeRenderer::init(int framesInFlight)
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     pipelineInfo.pMultisampleState = &ms;
 
+    // Настройка теста глубины для фона
     VkPipelineDepthStencilStateCreateInfo ds;
     memset(&ds, 0, sizeof(ds));
     ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     ds.depthTestEnable = VK_TRUE;
-    ds.depthWriteEnable = VK_TRUE;
-    ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    ds.depthWriteEnable = VK_FALSE; // Не записываем в буфер глубины
+    ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL; // Проходим тест если дальше
     pipelineInfo.pDepthStencilState = &ds;
 
     VkPipelineColorBlendAttachmentState colorBlendAttachment;
@@ -977,7 +932,7 @@ void CubeRenderer::init(int framesInFlight)
     m_devFuncs->vkDestroyShaderModule(m_dev, vertModule, nullptr);
     m_devFuncs->vkDestroyShaderModule(m_dev, fragModule, nullptr);
 
-    qDebug("cube initialized");
+    qDebug("background initialized");
 }
 
-#include "vulkancube.moc"
+#include "vulkanbackground.moc"
