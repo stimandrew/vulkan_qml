@@ -220,13 +220,14 @@ struct BackgroundVertex {
     float texCoord[2];
 };
 
-// Создаем большой квадрат для фона
+// Вершины для фона (растягиваем по высоте, сохраняя перспективу)
 static const BackgroundVertex backgroundVertices[] = {
-    // Покрывает все поле зрения
-    {{-500.0f, -500.0f, -300.0f}, {0.0f, 1.0f}},
-    {{500.0f, -500.0f, -300.0f}, {1.0f, 1.0f}},
-    {{500.0f, 500.0f, -300.0f}, {1.0f, 0.0f}},
-    {{-500.0f, 500.0f, -300.0f}, {0.0f, 0.0f}}
+    // Координаты в NDC (Normalized Device Coordinates)
+    // z = 1.0 - рисуем фон максимально далеко
+    {{-1.0f, -1.0f, 1.0f}, {0.0f, 1.0f}},
+    {{1.0f, -1.0f, 1.0f}, {1.0f, 1.0f}},
+    {{1.0f, 1.0f, 1.0f}, {1.0f, 0.0f}},
+    {{-1.0f, 1.0f, 1.0f}, {0.0f, 0.0f}}
 };
 
 static const uint16_t backgroundIndices[] = {
@@ -247,19 +248,16 @@ void BackgroundRenderer::mainPassRecordingStart()
     if (err != VK_SUCCESS || !p)
         qFatal("Failed to map uniform buffer memory: %d", err);
 
-    // Для фона используем только видовую и проекционную матрицы
-    // Модельная матрица - единичная, так как фон статичен
+    // Для фона используем упрощенную матрицу
     QMatrix4x4 model;
     model.setToIdentity();
 
+
     QMatrix4x4 view;
-    // Та же камера, что и для куба
-    view.lookAt(QVector3D(0.0f, 0.0f, 1.0f),  // позиция камеры
-                QVector3D(0.0f, 0.0f, 0.0f),  // цель
-                QVector3D(0.0f, 1.0f, 0.0f)); // вектор "вверх"
+    view.setToIdentity(); // Статичная камера
 
     QMatrix4x4 proj;
-    proj.perspective(60.0f, m_viewportSize.width() / (float)m_viewportSize.height(), 0.1f, 1000.0f);
+    proj.setToIdentity(); // Ортографическая проекция для полного экрана
 
     // Копируем матрицы в uniform buffer
     float *data = static_cast<float*>(p);
@@ -480,7 +478,7 @@ void BackgroundRenderer::loadTexture()
     imageInfo.extent.depth = 1;
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
-    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -532,7 +530,7 @@ void BackgroundRenderer::loadTexture()
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = m_texture.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = 1;

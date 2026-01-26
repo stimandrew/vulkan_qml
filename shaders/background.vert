@@ -13,8 +13,10 @@ layout(location = 1) in vec2 inTexCoord;
 layout(location = 0) out vec2 fragTexCoord;
 
 void main() {
-    // Для фона используем только проекционную и видовую матрицы
-    // Модельная матрица оставляем единичной
-    gl_Position = ubo.proj * ubo.view * ubo.model * vec4(inPosition, 1.0);
+    // Прямое преобразование в NDC пространство
+    // Поскольку наши вершины уже в NDC (-1..1)
+    gl_Position = vec4(inPosition, 1.0);
+    
+    // Передаем текстурные координаты
     fragTexCoord = inTexCoord;
 }

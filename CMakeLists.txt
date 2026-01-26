@@ -117,6 +117,10 @@ qt_add_qml_module(vulkanunderqml
     SOURCES vulkancube.h vulkancube.cpp
     RESOURCES textures/metalplate01_rgba.png
                 textures/background.jpg
+                shaders/background.frag
+                shaders/background.vert
+                shaders/cube.frag
+                shaders/cube.vert
     SOURCES
     SOURCES
     QML_FILES
