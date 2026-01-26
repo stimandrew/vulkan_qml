@@ -23,6 +23,11 @@ public:
     void setT(qreal t) { m_t = t; }
     void setViewportSize(const QSize &size) { m_viewportSize = size; }
     void setWindow(QQuickWindow *window) { m_window = window; }
+    void setCubePosition(qreal x, qreal y, qreal z) {
+        m_cubePositionX = x;
+        m_cubePositionY = y;
+        m_cubePositionZ = z;
+    }
 
 public slots:
     void frameStart();
@@ -42,6 +47,9 @@ private:
 
     QSize m_viewportSize;
     qreal m_t = 0;
+    qreal m_cubePositionX = 0;
+    qreal m_cubePositionY = 0;
+    qreal m_cubePositionZ = -5;
     QQuickWindow *m_window;
 
     QByteArray m_vert;
@@ -100,6 +108,36 @@ void VulkanCube::setT(qreal t)
         return;
     m_t = t;
     emit tChanged();
+    if (window())
+        window()->update();
+}
+
+void VulkanCube::setCubePositionX(qreal x)
+{
+    if (qFuzzyCompare(m_cubePositionX, x))
+        return;
+    m_cubePositionX = x;
+    emit cubePositionXChanged();
+    if (window())
+        window()->update();
+}
+
+void VulkanCube::setCubePositionY(qreal y)
+{
+    if (qFuzzyCompare(m_cubePositionY, y))
+        return;
+    m_cubePositionY = y;
+    emit cubePositionYChanged();
+    if (window())
+        window()->update();
+}
+
+void VulkanCube::setCubePositionZ(qreal z)
+{
+    if (qFuzzyCompare(m_cubePositionZ, z))
+        return;
+    m_cubePositionZ = z;
+    emit cubePositionZChanged();
     if (window())
         window()->update();
 }
@@ -199,6 +237,7 @@ void VulkanCube::sync()
     }
     m_renderer->setViewportSize(window()->size() * window()->devicePixelRatio());
     m_renderer->setT(m_t);
+    m_renderer->setCubePosition(m_cubePositionX, m_cubePositionY, m_cubePositionZ);
     m_renderer->setWindow(window());
 }
 
@@ -206,7 +245,6 @@ void CubeRenderer::frameStart()
 {
     QSGRendererInterface *rif = m_window->rendererInterface();
     Q_ASSERT(rif->graphicsApi() == QSGRendererInterface::Vulkan);
-
     if (m_vert.isEmpty())
         prepareShader(VertexStage);
     if (m_frag.isEmpty())
@@ -229,7 +267,6 @@ static const Vertex vertices[] = {
     {{1.0f, -1.0f, 1.0f}, {1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
     {{1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
     {{-1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}},
-
     // Задняя грань (Z-)
     {{1.0f, -1.0f, -1.0f}, {0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
     {{-1.0f, -1.0f, -1.0f}, {1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}},
@@ -282,7 +319,6 @@ void CubeRenderer::mainPassRecordingStart()
 {
     const QQuickWindow::GraphicsStateInfo &stateInfo(m_window->graphicsStateInfo());
     QSGRendererInterface *rif = m_window->rendererInterface();
-
     // Обновляем uniform buffer
     VkDeviceSize ubufOffset = stateInfo.currentFrameSlot * m_allocPerUbuf;
     void *p = nullptr;
@@ -290,11 +326,11 @@ void CubeRenderer::mainPassRecordingStart()
     if (err != VK_SUCCESS || !p)
         qFatal("Failed to map uniform buffer memory: %d", err);
 
-    // Матрицы для 3D преобразований с вращением
+    // Матрицы для 3D преобразований с вращением и позицией
     QMatrix4x4 model;
 
-    // Сначала перемещаем куб в нужное положение
-    model.translate(0.0f, 0.0f, -5.0f); // Отодвигаем куб
+    // Сначала перемещаем куб в позицию, заданную пользователем
+    model.translate(m_cubePositionX, m_cubePositionY, m_cubePositionZ);
 
     // Затем применяем вращение вокруг своей оси
     float angle = m_t * 360.0f; // Полный оборот за 1 секунду
@@ -302,13 +338,13 @@ void CubeRenderer::mainPassRecordingStart()
     model.rotate(angle * 0.7f, QVector3D(0.0f, 0.0f, 1.0f)); // Вращение вокруг Z
 
     QMatrix4x4 view;
-    // Камера смотрит на куб
-    view.lookAt(QVector3D(0.0f, 0.0f, 1.0f),  // позиция камеры (смотрим спереди)
-                QVector3D(0.0f, 0.0f, 0.0f),  // цель (центр сцены)
-                QVector3D(0.0f, 1.0f, 0.0f)); // вектор "вверх"
+    // Камера смотрит на центр сцены
+    view.lookAt(QVector3D(0.0f, 0.0f, 10.0f),  // позиция камеры
+                QVector3D(0.0f, 0.0f, 0.0f),   // цель (центр сцены)
+                QVector3D(0.0f, 1.0f, 0.0f));  // вектор "вверх"
 
     QMatrix4x4 proj;
-    proj.perspective(60.0f, m_viewportSize.width() / (float)m_viewportSize.height(), 0.1f, 100.0f);
+    proj.perspective(60.0f, m_viewportSize.width() / (float)m_viewportSize.height(), 0.1f, 150.0f);
 
     // Копируем матрицы и время в uniform buffer
     float *data = static_cast<float*>(p);
@@ -357,7 +393,6 @@ void CubeRenderer::prepareShader(Stage stage)
     QFile f(filename);
     if (!f.open(QIODevice::ReadOnly))
         qFatal("Failed to read shader %s", qPrintable(filename));
-
     const QByteArray contents = f.readAll();
 
     if (stage == VertexStage) {
@@ -388,7 +423,6 @@ void CubeRenderer::transitionImageLayout(VkCommandBuffer commandBuffer, VkImage 
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
-
     VkPipelineStageFlags sourceStage;
     VkPipelineStageFlags destinationStage;
 
@@ -415,7 +449,7 @@ void CubeRenderer::transitionImageLayout(VkCommandBuffer commandBuffer, VkImage 
         0, nullptr,
         0, nullptr,
         1, &barrier
-    );
+        );
 }
 
 void CubeRenderer::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height)
@@ -430,7 +464,6 @@ void CubeRenderer::copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buf
     region.imageSubresource.layerCount = 1;
     region.imageOffset = {0, 0, 0};
     region.imageExtent = {width, height, 1};
-
     m_devFuncs->vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
@@ -454,7 +487,6 @@ void CubeRenderer::loadTexture()
             }
         }
     }
-
     image = image.convertToFormat(QImage::Format_RGBA8888);
     m_texture.width = image.width();
     m_texture.height = image.height();
@@ -612,7 +644,6 @@ void CubeRenderer::init(int framesInFlight)
 {
     Q_ASSERT(framesInFlight <= 3);
     m_initialized = true;
-
     QSGRendererInterface *rif = m_window->rendererInterface();
     QVulkanInstance *inst = reinterpret_cast<QVulkanInstance *>(
         rif->getResource(m_window, QSGRendererInterface::VulkanInstanceResource));

@@ -10,32 +10,32 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
     vec4 texColor = texture(texSampler, fragTexCoord);
-    
-    // Два источника света
-    vec3 lightPos1 = vec3(3.0, 3.0, 3.0);
-    vec3 lightPos2 = vec3(-3.0, -3.0, 3.0);
-    vec3 lightColor = vec3(1.0, 1.0, 1.0);
-    
+
+    // Два направленных света
+    vec3 lightDir1 = normalize(vec3(1.0, 1.0, -1.0));  // Основной свет
+    vec3 lightDir2 = normalize(vec3(-0.5, -0.5, -1.0)); // Заполняющий свет
+    vec3 lightColor1 = vec3(1.0, 1.0, 1.0);
+    vec3 lightColor2 = vec3(0.8, 0.8, 1.0) * 0.5; // Немного голубоватый
+
     vec3 normal = normalize(fragNormal);
-    vec3 viewDir = normalize(-fragPos);
-    
+
     // Ambient
-    float ambientStrength = 0.4;
-    vec3 ambient = ambientStrength * lightColor;
-    
-    // Первый источник света
-    vec3 lightDir1 = normalize(lightPos1 - fragPos);
+    float ambientStrength = 0.25;
+    vec3 ambient = ambientStrength * lightColor1;
+
+    // Основной направленный свет
     float diff1 = max(dot(normal, lightDir1), 0.0);
-    vec3 diffuse1 = diff1 * lightColor;
-    
-    // Второй источник света
-    vec3 lightDir2 = normalize(lightPos2 - fragPos);
+    vec3 diffuse1 = diff1 * lightColor1;
+
+    // Заполняющий свет
     float diff2 = max(dot(normal, lightDir2), 0.0);
-    vec3 diffuse2 = diff2 * lightColor * 0.3; // Немного слабее
-    
+    vec3 diffuse2 = diff2 * lightColor2;
+
     // Комбинируем освещение
     vec3 result = (ambient + diffuse1 + diffuse2) * texColor.rgb;
-    result = pow(result, vec3(0.9)); // Гамма-коррекция
-    
+
+    // Гамма-коррекция
+    result = pow(result, vec3(1.0/2.2));
+
     outColor = vec4(result, 1.0);
 }

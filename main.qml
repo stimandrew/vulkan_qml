@@ -35,12 +35,180 @@ Window {
         height: 400
         z: 1
 
+        // Добавьте эти привязки:
+        cubePositionX: positionController.xPosition
+        cubePositionY: positionController.yPosition
+        cubePositionZ: positionController.zPosition
+
         SequentialAnimation on t {
             NumberAnimation { to: 1; duration: 5000; easing.type: Easing.InOutQuad }
             NumberAnimation { to: 0; duration: 5000; easing.type: Easing.InOutQuad }
             loops: Animation.Infinite
             running: true
         }
+    }
+
+    // Панель управления позицией куба
+    Rectangle {
+        id: controlPanel
+        width: 300
+        height: 220
+        color: Qt.rgba(1, 1, 1, 0.8)
+        radius: 10
+        border.width: 2
+        border.color: "#6666ff"
+
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.margins: 20
+
+        Column {
+            anchors.fill: parent
+            anchors.margins: 15
+            spacing: 10
+
+            Text {
+                text: "Панель управления кубом"
+                font.bold: true
+                font.pixelSize: 16
+                color: "#333"
+            }
+
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: "#ccc"
+            }
+
+            // Управление по оси X
+            Row {
+                width: parent.width
+                spacing: 10
+
+                Text {
+                    text: "X:"
+                    width: 30
+                    font.pixelSize: 14
+                    color: "#333"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Slider {
+                    id: xSlider
+                    width: parent.width - 90
+                    from: -20
+                    to: 20
+                    value: positionController.xPosition  // Измените начальное значение
+                    stepSize: 0.1
+                    onValueChanged: positionController.xPosition = value
+                }
+
+                Text {
+                    text: xSlider.value.toFixed(1)
+                    width: 40
+                    font.pixelSize: 12
+                    color: "#666"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            // Управление по оси Y
+            Row {
+                width: parent.width
+                spacing: 10
+
+                Text {
+                    text: "Y:"
+                    width: 30
+                    font.pixelSize: 14
+                    color: "#333"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Slider {
+                    id: ySlider
+                    width: parent.width - 90
+                    from: -10
+                    to: 10
+                    value: positionController.yPosition  // Измените начальное значение
+                    stepSize: 0.1
+                    onValueChanged: positionController.yPosition = value
+                }
+
+                Text {
+                    text: ySlider.value.toFixed(1)
+                    width: 40
+                    font.pixelSize: 12
+                    color: "#666"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            // Управление по оси Z
+            Row {
+                width: parent.width
+                spacing: 10
+
+                Text {
+                    text: "Z:"
+                    width: 30
+                    font.pixelSize: 14
+                    color: "#333"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Slider {
+                    id: zSlider
+                    width: parent.width - 90
+                    from: -100
+                    to: 5
+                    value: positionController.zPosition  // Измените начальное значение
+                    stepSize: 0.1
+                    onValueChanged: positionController.zPosition = value
+                }
+
+                Text {
+                    text: zSlider.value.toFixed(1)
+                    width: 40
+                    font.pixelSize: 12
+                    color: "#666"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            // Кнопки сброса
+            Row {
+                width: parent.width
+                spacing: 10
+
+                Button {
+                    text: "Сбросить позицию"
+                    width: (parent.width - 10) / 2
+                    onClicked: {
+                        positionController.resetPosition()
+                        xSlider.value = 0
+                        ySlider.value = 0
+                        zSlider.value = -5
+                    }
+                }
+
+                Button {
+                    text: "Случайная позиция"
+                    width: (parent.width - 10) / 2
+                    onClicked: {
+                        positionController.randomPosition()
+                        xSlider.value = positionController.xPosition
+                        ySlider.value = positionController.yPosition
+                        zSlider.value = positionController.zPosition
+                    }
+                }
+            }
+        }
+    }
+
+    // Контроллер позиции куба
+    PositionController {
+        id: positionController
     }
 
     // Кнопка переключения полноэкранного режима

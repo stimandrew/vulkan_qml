@@ -18,16 +18,16 @@ layout(location = 2) out vec3 fragPos;
 void main() {
     // Вычисляем позицию в мировом пространстве
     vec4 worldPos = ubo.model * vec4(inPosition, 1.0);
-    
-    // Вычисляем нормальную матрицу (обратно-транспонированная верхняя левая 3x3 матрица model)
-    mat3 normalMatrix = transpose(inverse(mat3(ubo.model)));
-    
-    // Преобразуем нормаль с помощью нормальной матрицы
-   fragNormal = mat3(transpose(inverse(ubo.model))) * inNormal;
-    
+
+    // Преобразуем нормаль в мировое пространство
+    // (используем только поворотную часть матрицы модели, без масштабирования)
+    mat3 normalMatrix = mat3(ubo.model);
+    normalMatrix = transpose(inverse(normalMatrix));
+    fragNormal = normalize(normalMatrix * inNormal);
+
     // Передаем позицию во фрагментный шейдер для освещения
     fragPos = worldPos.xyz;
-    
+
     gl_Position = ubo.proj * ubo.view * worldPos;
     fragTexCoord = inTexCoord;
 }
