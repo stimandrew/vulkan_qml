@@ -13,6 +13,7 @@
 #include <QVector3D>
 #include <QImage>
 #include <QFileInfo>
+#include "model_loader.h"
 
 class CubeRenderer : public QObject
 {
@@ -28,10 +29,14 @@ public:
         m_cubePositionY = y;
         m_cubePositionZ = z;
     }
-
+    void loadDefaultCube();
+    void setUseCustomModel(bool use) { m_useCustomModel = use; }
+signals:
+    void needLoadDefaultCube();
 public slots:
     void frameStart();
     void mainPassRecordingStart();
+    void loadCustomModel(const QString& filePath);
 
 private:
     enum Stage {
@@ -44,6 +49,32 @@ private:
     void destroyTexture();
     void transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout);
     void copyBufferToImage(VkCommandBuffer commandBuffer, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+    void recreateBuffers();
+
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties,
+                            const VkPhysicalDeviceMemoryProperties& memProperties) {
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+            if ((typeFilter & (1 << i)) &&
+                (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+        return uint32_t(-1);
+    }
+
+    VkShaderModule createShaderModule(const QByteArray& code) {
+        VkShaderModuleCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.codeSize = code.size();
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.constData());
+
+        VkShaderModule shaderModule;
+        VkResult err = m_devFuncs->vkCreateShaderModule(m_dev, &createInfo, nullptr, &shaderModule);
+        if (err != VK_SUCCESS) {
+            qFatal("Failed to create shader module: %d", err);
+        }
+        return shaderModule;
+    }
 
     QSize m_viewportSize;
     qreal m_t = 0;
@@ -51,6 +82,11 @@ private:
     qreal m_cubePositionY = 0;
     qreal m_cubePositionZ = -5;
     QQuickWindow *m_window;
+
+    bool m_useCustomModel = false;
+    QVector<VertexData> m_customVertices;
+    QVector<uint32_t> m_customIndices;
+    ModelLoader m_modelLoader;
 
     QByteArray m_vert;
     QByteArray m_frag;
@@ -100,6 +136,63 @@ private:
 VulkanCube::VulkanCube()
 {
     connect(this, &QQuickItem::windowChanged, this, &VulkanCube::handleWindowChanged);
+}
+
+void VulkanCube::setModelPath(const QUrl& path)
+{
+    if (m_modelPath == path)
+        return;
+    m_modelPath = path;
+    emit modelPathChanged();
+
+    if (window())
+        window()->update();
+}
+
+void VulkanCube::setUseCustomModel(bool use)
+{
+    if (m_useCustomModel == use)
+        return;
+    m_useCustomModel = use;
+
+    // Если переключаемся на использование куба, загружаем куб по умолчанию
+    if (!use && m_renderer) {
+        // Загружаем куб по умолчанию через сигнал
+        QMetaObject::invokeMethod(this, [this]() {
+                if (m_renderer) {
+                    m_renderer->loadDefaultCube();
+                }
+            }, Qt::QueuedConnection);
+    }
+
+    emit useCustomModelChanged();
+
+    if (window())
+        window()->update();
+}
+
+void VulkanCube::loadModel(const QUrl& fileUrl)
+{
+    QString filePath;
+    if (fileUrl.isLocalFile()) {
+        filePath = fileUrl.toLocalFile();
+    } else {
+        qWarning() << "Model file must be a local file";
+        return;
+    }
+
+    setModelPath(fileUrl);
+    setUseCustomModel(true);
+
+    // Загружаем модель
+    if (m_renderer) {
+        m_renderer->loadCustomModel(filePath);
+    }
+
+    emit modelLoaded();
+
+    if (window())
+        window()->update();
 }
 
 void VulkanCube::setT(qreal t)
@@ -200,6 +293,129 @@ CubeRenderer::~CubeRenderer()
     qDebug("cube released");
 }
 
+void CubeRenderer::loadDefaultCube()
+{
+    // Загружаем куб по умолчанию через ModelLoader
+    m_customVertices.clear();
+    m_customIndices.clear();
+
+    if (!m_modelLoader.loadBuiltInCube(m_customVertices, m_customIndices)) {
+        qWarning() << "Failed to load built-in cube";
+        return;
+    }
+
+    recreateBuffers();
+
+    m_indexCount = m_customIndices.size();
+    m_useCustomModel = false;
+
+    qDebug() << "Default cube loaded. Vertices:" << m_customVertices.size()
+             << "Indices:" << m_indexCount;
+}
+
+void CubeRenderer::recreateBuffers()
+{
+    // Освобождаем старые ресурсы если они существуют
+    if (m_vbuf != VK_NULL_HANDLE) {
+        m_devFuncs->vkDestroyBuffer(m_dev, m_vbuf, nullptr);
+        m_vbuf = VK_NULL_HANDLE;
+    }
+    if (m_vbufMem != VK_NULL_HANDLE) {
+        m_devFuncs->vkFreeMemory(m_dev, m_vbufMem, nullptr);
+        m_vbufMem = VK_NULL_HANDLE;
+    }
+    if (m_ibuf != VK_NULL_HANDLE) {
+        m_devFuncs->vkDestroyBuffer(m_dev, m_ibuf, nullptr);
+        m_ibuf = VK_NULL_HANDLE;
+    }
+    if (m_ibufMem != VK_NULL_HANDLE) {
+        m_devFuncs->vkFreeMemory(m_dev, m_ibufMem, nullptr);
+        m_ibufMem = VK_NULL_HANDLE;
+    }
+
+    VkPhysicalDeviceProperties physDevProps;
+    m_funcs->vkGetPhysicalDeviceProperties(m_physDev, &physDevProps);
+
+    VkPhysicalDeviceMemoryProperties physDevMemProps;
+    m_funcs->vkGetPhysicalDeviceMemoryProperties(m_physDev, &physDevMemProps);
+
+    // Vertex buffer
+    VkBufferCreateInfo bufferInfo = {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = m_customVertices.size() * sizeof(VertexData);
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkResult err = m_devFuncs->vkCreateBuffer(m_dev, &bufferInfo, nullptr, &m_vbuf);
+    if (err != VK_SUCCESS)
+        qFatal("Failed to create vertex buffer: %d", err);
+
+    VkMemoryRequirements memReq;
+    m_devFuncs->vkGetBufferMemoryRequirements(m_dev, m_vbuf, &memReq);
+
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReq.size;
+
+    uint32_t memTypeIndex = findMemoryType(memReq.memoryTypeBits,
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                           physDevMemProps);
+
+    if (memTypeIndex == uint32_t(-1))
+        qFatal("Failed to find suitable memory type for vertex buffer");
+
+    allocInfo.memoryTypeIndex = memTypeIndex;
+    err = m_devFuncs->vkAllocateMemory(m_dev, &allocInfo, nullptr, &m_vbufMem);
+    if (err != VK_SUCCESS)
+        qFatal("Failed to allocate vertex buffer memory: %d", err);
+
+    err = m_devFuncs->vkBindBufferMemory(m_dev, m_vbuf, m_vbufMem, 0);
+    if (err != VK_SUCCESS)
+        qFatal("Failed to bind vertex buffer memory: %d", err);
+
+    void *p;
+    err = m_devFuncs->vkMapMemory(m_dev, m_vbufMem, 0, bufferInfo.size, 0, &p);
+    if (err != VK_SUCCESS)
+        qFatal("Failed to map vertex buffer memory: %d", err);
+
+    memcpy(p, m_customVertices.constData(), bufferInfo.size);
+    m_devFuncs->vkUnmapMemory(m_dev, m_vbufMem);
+
+    // Index buffer - правильный размер для текущей модели
+    bufferInfo.size = m_customIndices.size() * sizeof(uint32_t); // ВСЕГДА uint32_t
+    bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+
+    err = m_devFuncs->vkCreateBuffer(m_dev, &bufferInfo, nullptr, &m_ibuf);
+    if (err != VK_SUCCESS)
+        qFatal("Failed to create index buffer: %d", err);
+
+    m_devFuncs->vkGetBufferMemoryRequirements(m_dev, m_ibuf, &memReq);
+    allocInfo.allocationSize = memReq.size;
+
+    memTypeIndex = findMemoryType(memReq.memoryTypeBits,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                  physDevMemProps);
+
+    if (memTypeIndex == uint32_t(-1))
+        qFatal("Failed to find suitable memory type for index buffer");
+
+    allocInfo.memoryTypeIndex = memTypeIndex;
+    err = m_devFuncs->vkAllocateMemory(m_dev, &allocInfo, nullptr, &m_ibufMem);
+    if (err != VK_SUCCESS)
+        qFatal("Failed to allocate index buffer memory: %d", err);
+
+    err = m_devFuncs->vkBindBufferMemory(m_dev, m_ibuf, m_ibufMem, 0);
+    if (err != VK_SUCCESS)
+        qFatal("Failed to bind index buffer memory: %d", err);
+
+    err = m_devFuncs->vkMapMemory(m_dev, m_ibufMem, 0, bufferInfo.size, 0, &p);
+    if (err != VK_SUCCESS)
+        qFatal("Failed to map index buffer memory: %d", err);
+
+    memcpy(p, m_customIndices.constData(), bufferInfo.size);
+    m_devFuncs->vkUnmapMemory(m_dev, m_ibufMem); // ВАЖНО: не забыть!
+}
+
 void CubeRenderer::destroyTexture()
 {
     if (m_texture.sampler != VK_NULL_HANDLE) {
@@ -228,17 +444,49 @@ void CubeRenderer::destroyTexture()
     }
 }
 
+void CubeRenderer::loadCustomModel(const QString& filePath)
+{
+    m_customVertices.clear();
+    m_customIndices.clear();
+
+    if (m_modelLoader.loadOBJ(filePath, m_customVertices, m_customIndices)) {
+        recreateBuffers();
+        m_indexCount = m_customIndices.size();
+        m_useCustomModel = true;
+        qDebug() << "Custom model loaded successfully. Vertices:"
+                 << m_customVertices.size() << "Indices:" << m_indexCount;
+    } else {
+        qWarning() << "Failed to load model, falling back to cube";
+        loadDefaultCube();
+    }
+}
+
 void VulkanCube::sync()
 {
     if (!m_renderer) {
         m_renderer = new CubeRenderer;
         connect(window(), &QQuickWindow::beforeRendering, m_renderer, &CubeRenderer::frameStart, Qt::DirectConnection);
         connect(window(), &QQuickWindow::beforeRenderPassRecording, m_renderer, &CubeRenderer::mainPassRecordingStart, Qt::DirectConnection);
+
+        // Подключаем сигнал загрузки модели
+        connect(this, &VulkanCube::modelLoaded, this, [this]() {
+            // Оповещаем о загрузке модели, но саму загрузку теперь делаем в loadModel
+            if (window())
+                window()->update();
+        });
+
+        // Подключаем сигнал загрузки куба по умолчанию
+        connect(m_renderer, &CubeRenderer::needLoadDefaultCube, this, [this]() {
+            if (m_renderer) {
+                m_renderer->loadDefaultCube();
+            }
+        });
     }
     m_renderer->setViewportSize(window()->size() * window()->devicePixelRatio());
     m_renderer->setT(m_t);
     m_renderer->setCubePosition(m_cubePositionX, m_cubePositionY, m_cubePositionZ);
     m_renderer->setWindow(window());
+    m_renderer->setUseCustomModel(m_useCustomModel);
 }
 
 void CubeRenderer::frameStart()
@@ -344,7 +592,7 @@ void CubeRenderer::mainPassRecordingStart()
                 QVector3D(0.0f, 1.0f, 0.0f));  // вектор "вверх"
 
     QMatrix4x4 proj;
-    proj.perspective(60.0f, m_viewportSize.width() / (float)m_viewportSize.height(), 0.1f, 150.0f);
+    proj.perspective(60.0f, m_viewportSize.width() / (float)m_viewportSize.height(), 0.1f, 15000.0f);
 
     // Копируем матрицы и время в uniform buffer
     float *data = static_cast<float*>(p);
@@ -365,7 +613,9 @@ void CubeRenderer::mainPassRecordingStart()
 
     VkDeviceSize vbufOffset = 0;
     m_devFuncs->vkCmdBindVertexBuffers(cb, 0, 1, &m_vbuf, &vbufOffset);
-    m_devFuncs->vkCmdBindIndexBuffer(cb, m_ibuf, 0, VK_INDEX_TYPE_UINT16);
+
+    // ИСПРАВЛЕНО: Всегда используем uint32_t для индексов
+    m_devFuncs->vkCmdBindIndexBuffer(cb, m_ibuf, 0, VK_INDEX_TYPE_UINT32);
 
     uint32_t dynamicOffset = m_allocPerUbuf * stateInfo.currentFrameSlot;
     m_devFuncs->vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1,
@@ -644,13 +894,17 @@ void CubeRenderer::init(int framesInFlight)
 {
     Q_ASSERT(framesInFlight <= 3);
     m_initialized = true;
+
+    // Получаем Vulkan ресурсы из QQuickWindow
     QSGRendererInterface *rif = m_window->rendererInterface();
     QVulkanInstance *inst = reinterpret_cast<QVulkanInstance *>(
         rif->getResource(m_window, QSGRendererInterface::VulkanInstanceResource));
     Q_ASSERT(inst && inst->isValid());
 
-    m_physDev = *reinterpret_cast<VkPhysicalDevice *>(rif->getResource(m_window, QSGRendererInterface::PhysicalDeviceResource));
-    m_dev = *reinterpret_cast<VkDevice *>(rif->getResource(m_window, QSGRendererInterface::DeviceResource));
+    m_physDev = *reinterpret_cast<VkPhysicalDevice *>(
+        rif->getResource(m_window, QSGRendererInterface::PhysicalDeviceResource));
+    m_dev = *reinterpret_cast<VkDevice *>(
+        rif->getResource(m_window, QSGRendererInterface::DeviceResource));
     Q_ASSERT(m_physDev && m_dev);
 
     m_devFuncs = inst->deviceFunctions(m_dev);
@@ -664,43 +918,51 @@ void CubeRenderer::init(int framesInFlight)
     // Загружаем текстуру
     loadTexture();
 
-    // Vertex buffer
+    // ВСЕГДА загружаем геометрию куба по умолчанию при инициализации
+    if (!m_modelLoader.loadBuiltInCube(m_customVertices, m_customIndices)) {
+        qFatal("Failed to load built-in cube");
+    }
+
+    m_useCustomModel = false; // По умолчанию используем куб
+    m_indexCount = m_customIndices.size();
+
+    qDebug() << "Loaded built-in cube. Vertices:" << m_customVertices.size()
+             << "Indices:" << m_customIndices.size();
+
+    // Получаем свойства устройства и памяти
     VkPhysicalDeviceProperties physDevProps;
     m_funcs->vkGetPhysicalDeviceProperties(m_physDev, &physDevProps);
 
     VkPhysicalDeviceMemoryProperties physDevMemProps;
     m_funcs->vkGetPhysicalDeviceMemoryProperties(m_physDev, &physDevMemProps);
 
-    VkBufferCreateInfo bufferInfo;
-    memset(&bufferInfo, 0, sizeof(bufferInfo));
+    // Флаги памяти для буферов
+    const VkMemoryPropertyFlags hostVisibleMemory =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+    // 1. Vertex Buffer
+    VkBufferCreateInfo bufferInfo = {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = sizeof(vertices);
+    bufferInfo.size = m_customVertices.size() * sizeof(VertexData);
     bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
     VkResult err = m_devFuncs->vkCreateBuffer(m_dev, &bufferInfo, nullptr, &m_vbuf);
     if (err != VK_SUCCESS)
         qFatal("Failed to create vertex buffer: %d", err);
 
     VkMemoryRequirements memReq;
     m_devFuncs->vkGetBufferMemoryRequirements(m_dev, m_vbuf, &memReq);
-    VkMemoryAllocateInfo allocInfo;
-    memset(&allocInfo, 0, sizeof(allocInfo));
+
+    uint32_t memTypeIndex = findMemoryType(memReq.memoryTypeBits, hostVisibleMemory, physDevMemProps);
+    if (memTypeIndex == uint32_t(-1))
+        qFatal("Failed to find suitable memory type for vertex buffer");
+
+    VkMemoryAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memReq.size;
-
-    uint32_t memTypeIndex = uint32_t(-1);
-    VkMemoryPropertyFlags memPropFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    for (uint32_t i = 0; i < physDevMemProps.memoryTypeCount; ++i) {
-        if (memReq.memoryTypeBits & (1 << i)) {
-            if ((physDevMemProps.memoryTypes[i].propertyFlags & memPropFlags) == memPropFlags) {
-                memTypeIndex = i;
-                break;
-            }
-        }
-    }
-    if (memTypeIndex == uint32_t(-1))
-        qFatal("Failed to find device memory type for vertex buffer");
-
     allocInfo.memoryTypeIndex = memTypeIndex;
+
     err = m_devFuncs->vkAllocateMemory(m_dev, &allocInfo, nullptr, &m_vbufMem);
     if (err != VK_SUCCESS)
         qFatal("Failed to allocate vertex buffer memory: %d", err);
@@ -709,35 +971,31 @@ void CubeRenderer::init(int framesInFlight)
     if (err != VK_SUCCESS)
         qFatal("Failed to bind vertex buffer memory: %d", err);
 
-    void *p;
-    err = m_devFuncs->vkMapMemory(m_dev, m_vbufMem, 0, bufferInfo.size, 0, &p);
+    // Заполняем vertex buffer данными
+    void *data;
+    err = m_devFuncs->vkMapMemory(m_dev, m_vbufMem, 0, bufferInfo.size, 0, &data);
     if (err != VK_SUCCESS)
         qFatal("Failed to map vertex buffer memory: %d", err);
-    memcpy(p, vertices, bufferInfo.size);
+
+    memcpy(data, m_customVertices.constData(), bufferInfo.size);
     m_devFuncs->vkUnmapMemory(m_dev, m_vbufMem);
 
-    // Index buffer
-    bufferInfo.size = sizeof(indices);
+    // 2. Index Buffer - ВСЕГДА uint32_t
+    bufferInfo.size = m_customIndices.size() * sizeof(uint32_t); // <-- ИСПРАВЛЕНО: всегда uint32_t
     bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+
     err = m_devFuncs->vkCreateBuffer(m_dev, &bufferInfo, nullptr, &m_ibuf);
     if (err != VK_SUCCESS)
         qFatal("Failed to create index buffer: %d", err);
 
     m_devFuncs->vkGetBufferMemoryRequirements(m_dev, m_ibuf, &memReq);
-    allocInfo.allocationSize = memReq.size;
-    memTypeIndex = uint32_t(-1);
-    for (uint32_t i = 0; i < physDevMemProps.memoryTypeCount; ++i) {
-        if (memReq.memoryTypeBits & (1 << i)) {
-            if ((physDevMemProps.memoryTypes[i].propertyFlags & memPropFlags) == memPropFlags) {
-                memTypeIndex = i;
-                break;
-            }
-        }
-    }
+    memTypeIndex = findMemoryType(memReq.memoryTypeBits, hostVisibleMemory, physDevMemProps);
     if (memTypeIndex == uint32_t(-1))
-        qFatal("Failed to find device memory type for index buffer");
+        qFatal("Failed to find suitable memory type for index buffer");
 
+    allocInfo.allocationSize = memReq.size;
     allocInfo.memoryTypeIndex = memTypeIndex;
+
     err = m_devFuncs->vkAllocateMemory(m_dev, &allocInfo, nullptr, &m_ibufMem);
     if (err != VK_SUCCESS)
         qFatal("Failed to allocate index buffer memory: %d", err);
@@ -746,38 +1004,33 @@ void CubeRenderer::init(int framesInFlight)
     if (err != VK_SUCCESS)
         qFatal("Failed to bind index buffer memory: %d", err);
 
-    err = m_devFuncs->vkMapMemory(m_dev, m_ibufMem, 0, bufferInfo.size, 0, &p);
+    err = m_devFuncs->vkMapMemory(m_dev, m_ibufMem, 0, bufferInfo.size, 0, &data);
     if (err != VK_SUCCESS)
         qFatal("Failed to map index buffer memory: %d", err);
-    memcpy(p, indices, bufferInfo.size);
-    m_devFuncs->vkUnmapMemory(m_dev, m_ibufMem);
 
-    m_indexCount = sizeof(indices) / sizeof(uint16_t);
+    // Копируем индексы без конвертации (они уже uint32_t)
+    memcpy(data, m_customIndices.constData(), bufferInfo.size);
+    m_devFuncs->vkUnmapMemory(m_dev, m_ibufMem); // ВАЖНО: не забыть!
 
-    // Uniform buffer
+    // 3. Uniform Buffer
     const VkDeviceSize ubufAlign = physDevProps.limits.minUniformBufferOffsetAlignment;
     m_allocPerUbuf = aligned(UBUF_SIZE, ubufAlign);
+
     bufferInfo.size = m_allocPerUbuf * framesInFlight;
     bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+
     err = m_devFuncs->vkCreateBuffer(m_dev, &bufferInfo, nullptr, &m_ubuf);
     if (err != VK_SUCCESS)
         qFatal("Failed to create uniform buffer: %d", err);
 
     m_devFuncs->vkGetBufferMemoryRequirements(m_dev, m_ubuf, &memReq);
-    allocInfo.allocationSize = memReq.size;
-    memTypeIndex = uint32_t(-1);
-    for (uint32_t i = 0; i < physDevMemProps.memoryTypeCount; ++i) {
-        if (memReq.memoryTypeBits & (1 << i)) {
-            if ((physDevMemProps.memoryTypes[i].propertyFlags & memPropFlags) == memPropFlags) {
-                memTypeIndex = i;
-                break;
-            }
-        }
-    }
+    memTypeIndex = findMemoryType(memReq.memoryTypeBits, hostVisibleMemory, physDevMemProps);
     if (memTypeIndex == uint32_t(-1))
-        qFatal("Failed to find device memory type for uniform buffer");
+        qFatal("Failed to find suitable memory type for uniform buffer");
 
+    allocInfo.allocationSize = memReq.size;
     allocInfo.memoryTypeIndex = memTypeIndex;
+
     err = m_devFuncs->vkAllocateMemory(m_dev, &allocInfo, nullptr, &m_ubufMem);
     if (err != VK_SUCCESS)
         qFatal("Failed to allocate uniform buffer memory: %d", err);
@@ -786,229 +1039,254 @@ void CubeRenderer::init(int framesInFlight)
     if (err != VK_SUCCESS)
         qFatal("Failed to bind uniform buffer memory: %d", err);
 
-    // Pipeline layout
-    VkDescriptorSetLayoutBinding layoutBinding[2];
-    layoutBinding[0].binding = 0;
-    layoutBinding[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    layoutBinding[0].descriptorCount = 1;
-    layoutBinding[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    layoutBinding[0].pImmutableSamplers = nullptr;
+    // 4. Descriptor Set Layout
+    VkDescriptorSetLayoutBinding layoutBindings[2] = {};
 
-    layoutBinding[1].binding = 1;
-    layoutBinding[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    layoutBinding[1].descriptorCount = 1;
-    layoutBinding[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    layoutBinding[1].pImmutableSamplers = nullptr;
+    // Uniform buffer binding
+    layoutBindings[0].binding = 0;
+    layoutBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    layoutBindings[0].descriptorCount = 1;
+    layoutBindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    layoutBindings[0].pImmutableSamplers = nullptr;
 
-    VkDescriptorSetLayoutCreateInfo descLayoutInfo;
-    memset(&descLayoutInfo, 0, sizeof(descLayoutInfo));
-    descLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descLayoutInfo.bindingCount = 2;
-    descLayoutInfo.pBindings = layoutBinding;
-    err = m_devFuncs->vkCreateDescriptorSetLayout(m_dev, &descLayoutInfo, nullptr, &m_resLayout);
+    // Texture sampler binding
+    layoutBindings[1].binding = 1;
+    layoutBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    layoutBindings[1].descriptorCount = 1;
+    layoutBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    layoutBindings[1].pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = layoutBindings;
+
+    err = m_devFuncs->vkCreateDescriptorSetLayout(m_dev, &layoutInfo, nullptr, &m_resLayout);
     if (err != VK_SUCCESS)
         qFatal("Failed to create descriptor set layout: %d", err);
 
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo;
-    memset(&pipelineLayoutInfo, 0, sizeof(pipelineLayoutInfo));
+    // 5. Pipeline Layout
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &m_resLayout;
+
     err = m_devFuncs->vkCreatePipelineLayout(m_dev, &pipelineLayoutInfo, nullptr, &m_pipelineLayout);
     if (err != VK_SUCCESS)
         qFatal("Failed to create pipeline layout: %d", err);
 
-    // Descriptor pool
-    VkDescriptorPoolSize descPoolSizes[2];
-    descPoolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    descPoolSizes[0].descriptorCount = 1;
-    descPoolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descPoolSizes[1].descriptorCount = 1;
+    // 6. Descriptor Pool
+    VkDescriptorPoolSize poolSizes[2] = {};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = 1;
 
-    VkDescriptorPoolCreateInfo descPoolInfo;
-    memset(&descPoolInfo, 0, sizeof(descPoolInfo));
-    descPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    descPoolInfo.maxSets = 1;
-    descPoolInfo.poolSizeCount = 2;
-    descPoolInfo.pPoolSizes = descPoolSizes;
-    err = m_devFuncs->vkCreateDescriptorPool(m_dev, &descPoolInfo, nullptr, &m_descriptorPool);
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1;
+
+    err = m_devFuncs->vkCreateDescriptorPool(m_dev, &poolInfo, nullptr, &m_descriptorPool);
     if (err != VK_SUCCESS)
         qFatal("Failed to create descriptor pool: %d", err);
 
-    // Descriptor set
-    VkDescriptorSetAllocateInfo descSetAllocInfo;
-    memset(&descSetAllocInfo, 0, sizeof(descSetAllocInfo));
-    descSetAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    descSetAllocInfo.descriptorPool = m_descriptorPool;
-    descSetAllocInfo.descriptorSetCount = 1;
-    descSetAllocInfo.pSetLayouts = &m_resLayout;
-    err = m_devFuncs->vkAllocateDescriptorSets(m_dev, &descSetAllocInfo, &m_ubufDescriptor);
+    // 7. Descriptor Set
+    VkDescriptorSetAllocateInfo allocSetInfo = {};
+    allocSetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocSetInfo.descriptorPool = m_descriptorPool;
+    allocSetInfo.descriptorSetCount = 1;
+    allocSetInfo.pSetLayouts = &m_resLayout;
+
+    err = m_devFuncs->vkAllocateDescriptorSets(m_dev, &allocSetInfo, &m_ubufDescriptor);
     if (err != VK_SUCCESS)
         qFatal("Failed to allocate descriptor set: %d", err);
 
-    VkDescriptorBufferInfo bufferInfoDesc;
-    bufferInfoDesc.buffer = m_ubuf;
-    bufferInfoDesc.offset = 0;
-    bufferInfoDesc.range = UBUF_SIZE;
+    // 8. Update Descriptor Set
+    VkDescriptorBufferInfo bufferDescInfo = {};
+    bufferDescInfo.buffer = m_ubuf;
+    bufferDescInfo.offset = 0;
+    bufferDescInfo.range = UBUF_SIZE;
 
-    VkDescriptorImageInfo imageInfo;
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = m_texture.view;
-    imageInfo.sampler = m_texture.sampler;
+    VkDescriptorImageInfo imageDescInfo = {};
+    imageDescInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    imageDescInfo.imageView = m_texture.view;
+    imageDescInfo.sampler = m_texture.sampler;
 
-    VkWriteDescriptorSet writeDescSet[2];
-    memset(writeDescSet, 0, sizeof(writeDescSet));
+    VkWriteDescriptorSet descriptorWrites[2] = {};
 
-    writeDescSet[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writeDescSet[0].dstSet = m_ubufDescriptor;
-    writeDescSet[0].dstBinding = 0;
-    writeDescSet[0].descriptorCount = 1;
-    writeDescSet[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    writeDescSet[0].pBufferInfo = &bufferInfoDesc;
+    // Uniform buffer descriptor
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = m_ubufDescriptor;
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].dstArrayElement = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pBufferInfo = &bufferDescInfo;
 
-    writeDescSet[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writeDescSet[1].dstSet = m_ubufDescriptor;
-    writeDescSet[1].dstBinding = 1;
-    writeDescSet[1].descriptorCount = 1;
-    writeDescSet[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writeDescSet[1].pImageInfo = &imageInfo;
+    // Texture sampler descriptor
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = m_ubufDescriptor;
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].dstArrayElement = 0;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].pImageInfo = &imageDescInfo;
 
-    m_devFuncs->vkUpdateDescriptorSets(m_dev, 2, writeDescSet, 0, nullptr);
+    m_devFuncs->vkUpdateDescriptorSets(m_dev, 2, descriptorWrites, 0, nullptr);
 
-    // Pipeline cache
-    VkPipelineCacheCreateInfo pipelineCacheInfo;
-    memset(&pipelineCacheInfo, 0, sizeof(pipelineCacheInfo));
-    pipelineCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    err = m_devFuncs->vkCreatePipelineCache(m_dev, &pipelineCacheInfo, nullptr, &m_pipelineCache);
+    // 9. Pipeline Cache
+    VkPipelineCacheCreateInfo cacheInfo = {};
+    cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+
+    err = m_devFuncs->vkCreatePipelineCache(m_dev, &cacheInfo, nullptr, &m_pipelineCache);
     if (err != VK_SUCCESS)
         qFatal("Failed to create pipeline cache: %d", err);
 
-    // Graphics pipeline
-    VkGraphicsPipelineCreateInfo pipelineInfo;
-    memset(&pipelineInfo, 0, sizeof(pipelineInfo));
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    // 10. Create Graphics Pipeline
+    VkShaderModule vertShaderModule = createShaderModule(m_vert);
+    VkShaderModule fragShaderModule = createShaderModule(m_frag);
 
-    VkPipelineShaderStageCreateInfo shaderStages[2];
-    memset(shaderStages, 0, sizeof(shaderStages));
+    VkPipelineShaderStageCreateInfo shaderStages[2] = {};
+
     shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    VkShaderModule vertModule;
-    VkShaderModuleCreateInfo shaderInfo;
-    memset(&shaderInfo, 0, sizeof(shaderInfo));
-    shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shaderInfo.codeSize = m_vert.size();
-    shaderInfo.pCode = reinterpret_cast<const uint32_t *>(m_vert.constData());
-    err = m_devFuncs->vkCreateShaderModule(m_dev, &shaderInfo, nullptr, &vertModule);
-    if (err != VK_SUCCESS)
-        qFatal("Failed to create vertex shader module: %d", err);
-    shaderStages[0].module = vertModule;
+    shaderStages[0].module = vertShaderModule;
     shaderStages[0].pName = "main";
+
     shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkShaderModule fragModule;
-    shaderInfo.codeSize = m_frag.size();
-    shaderInfo.pCode = reinterpret_cast<const uint32_t *>(m_frag.constData());
-    err = m_devFuncs->vkCreateShaderModule(m_dev, &shaderInfo, nullptr, &fragModule);
-    if (err != VK_SUCCESS)
-        qFatal("Failed to create fragment shader module: %d", err);
-    shaderStages[1].module = fragModule;
+    shaderStages[1].module = fragShaderModule;
     shaderStages[1].pName = "main";
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages;
 
-    VkVertexInputBindingDescription vertexBindingDesc;
-    vertexBindingDesc.binding = 0;
-    vertexBindingDesc.stride = sizeof(Vertex);
-    vertexBindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    // Vertex input
+    VkVertexInputBindingDescription bindingDescription = {};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(VertexData);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription vertexAttrDesc[3];
-    vertexAttrDesc[0].location = 0;
-    vertexAttrDesc[0].binding = 0;
-    vertexAttrDesc[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    vertexAttrDesc[0].offset = offsetof(Vertex, pos);
-    vertexAttrDesc[1].location = 1;
-    vertexAttrDesc[1].binding = 0;
-    vertexAttrDesc[1].format = VK_FORMAT_R32G32_SFLOAT;
-    vertexAttrDesc[1].offset = offsetof(Vertex, texCoord);
-    vertexAttrDesc[2].location = 2;
-    vertexAttrDesc[2].binding = 0;
-    vertexAttrDesc[2].format = VK_FORMAT_R32G32B32_SFLOAT;
-    vertexAttrDesc[2].offset = offsetof(Vertex, normal);
+    VkVertexInputAttributeDescription attributeDescriptions[3] = {};
 
-    VkPipelineVertexInputStateCreateInfo vertexInputInfo;
-    memset(&vertexInputInfo, 0, sizeof(vertexInputInfo));
+    // Position attribute
+    attributeDescriptions[0].location = 0;
+    attributeDescriptions[0].binding = 0;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[0].offset = offsetof(VertexData, position);
+
+    // TexCoord attribute
+    attributeDescriptions[1].location = 1;
+    attributeDescriptions[1].binding = 0;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[1].offset = offsetof(VertexData, texCoord);
+
+    // Normal attribute
+    attributeDescriptions[2].location = 2;
+    attributeDescriptions[2].binding = 0;
+    attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[2].offset = offsetof(VertexData, normal);
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
-    vertexInputInfo.pVertexBindingDescriptions = &vertexBindingDesc;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
     vertexInputInfo.vertexAttributeDescriptionCount = 3;
-    vertexInputInfo.pVertexAttributeDescriptions = vertexAttrDesc;
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+
+    // Input assembly
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    // Viewport state
+    VkPipelineViewportStateCreateInfo viewportState = {};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    // Rasterizer
+    VkPipelineRasterizationStateCreateInfo rasterizer = {};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    // Multisampling
+    VkPipelineMultisampleStateCreateInfo multisampling = {};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // Depth stencil
+    VkPipelineDepthStencilStateCreateInfo depthStencil = {};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthStencil.depthBoundsTestEnable = VK_FALSE;
+    depthStencil.stencilTestEnable = VK_FALSE;
+
+    // Color blending
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    // Dynamic state
+    VkDynamicState dynamicStates[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamicState = {};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = dynamicStates;
+
+    // Graphics pipeline
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
     pipelineInfo.pVertexInputState = &vertexInputInfo;
-
-    VkPipelineInputAssemblyStateCreateInfo ia;
-    memset(&ia, 0, sizeof(ia));
-    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    pipelineInfo.pInputAssemblyState = &ia;
-
-    VkPipelineViewportStateCreateInfo vp;
-    memset(&vp, 0, sizeof(vp));
-    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    vp.viewportCount = 1;
-    vp.scissorCount = 1;
-    pipelineInfo.pViewportState = &vp;
-
-    VkPipelineRasterizationStateCreateInfo rs;
-    memset(&rs, 0, sizeof(rs));
-    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_NONE;
-    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rs.lineWidth = 1.0f;
-    pipelineInfo.pRasterizationState = &rs;
-
-    VkPipelineMultisampleStateCreateInfo ms;
-    memset(&ms, 0, sizeof(ms));
-    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    pipelineInfo.pMultisampleState = &ms;
-
-    VkPipelineDepthStencilStateCreateInfo ds;
-    memset(&ds, 0, sizeof(ds));
-    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    ds.depthTestEnable = VK_TRUE;
-    ds.depthWriteEnable = VK_TRUE;
-    ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    pipelineInfo.pDepthStencilState = &ds;
-
-    VkPipelineColorBlendAttachmentState colorBlendAttachment;
-    memset(&colorBlendAttachment, 0, sizeof(colorBlendAttachment));
-    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    VkPipelineColorBlendStateCreateInfo cb;
-    memset(&cb, 0, sizeof(cb));
-    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    cb.attachmentCount = 1;
-    cb.pAttachments = &colorBlendAttachment;
-    pipelineInfo.pColorBlendState = &cb;
-
-    VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo dyn;
-    memset(&dyn, 0, sizeof(dyn));
-    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
-    dyn.pDynamicStates = dynStates;
-    pipelineInfo.pDynamicState = &dyn;
-
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = m_pipelineLayout;
     pipelineInfo.renderPass = rp;
+    pipelineInfo.subpass = 0;
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
-    err = m_devFuncs->vkCreateGraphicsPipelines(m_dev, m_pipelineCache, 1, &pipelineInfo, nullptr, &m_pipeline);
+    err = m_devFuncs->vkCreateGraphicsPipelines(
+        m_dev, m_pipelineCache, 1, &pipelineInfo, nullptr, &m_pipeline);
+
     if (err != VK_SUCCESS)
         qFatal("Failed to create graphics pipeline: %d", err);
 
-    m_devFuncs->vkDestroyShaderModule(m_dev, vertModule, nullptr);
-    m_devFuncs->vkDestroyShaderModule(m_dev, fragModule, nullptr);
+    // Cleanup shader modules
+    m_devFuncs->vkDestroyShaderModule(m_dev, vertShaderModule, nullptr);
+    m_devFuncs->vkDestroyShaderModule(m_dev, fragShaderModule, nullptr);
 
-    qDebug("cube initialized");
+    qDebug() << "Renderer initialized successfully";
+    qDebug() << "Model vertices:" << m_customVertices.size()
+             << "indices:" << m_indexCount
+             << "using custom model:" << m_useCustomModel;
 }
 
 #include "vulkancube.moc"

@@ -6,6 +6,8 @@
 
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
+#include <QVector>
+#include <QUrl>
 
 class CubeRenderer;
 
@@ -16,6 +18,8 @@ class VulkanCube : public QQuickItem
     Q_PROPERTY(qreal cubePositionX READ cubePositionX WRITE setCubePositionX NOTIFY cubePositionXChanged)
     Q_PROPERTY(qreal cubePositionY READ cubePositionY WRITE setCubePositionY NOTIFY cubePositionYChanged)
     Q_PROPERTY(qreal cubePositionZ READ cubePositionZ WRITE setCubePositionZ NOTIFY cubePositionZChanged)
+    Q_PROPERTY(QUrl modelPath READ modelPath WRITE setModelPath NOTIFY modelPathChanged)
+    Q_PROPERTY(bool useCustomModel READ useCustomModel WRITE setUseCustomModel NOTIFY useCustomModelChanged)
     QML_ELEMENT
 
 public:
@@ -31,15 +35,26 @@ public:
 
     qreal cubePositionZ() const { return m_cubePositionZ; }
     void setCubePositionZ(qreal z);
+
+    QUrl modelPath() const { return m_modelPath; }
+    void setModelPath(const QUrl& path);
+
+    bool useCustomModel() const { return m_useCustomModel; }
+    void setUseCustomModel(bool use);
+
 signals:
     void tChanged();
     void cubePositionXChanged();
     void cubePositionYChanged();
     void cubePositionZChanged();
+    void modelPathChanged();
+    void useCustomModelChanged();
+    void modelLoaded();
 
 public slots:
     void sync();
     void cleanup();
+    void loadModel(const QUrl& fileUrl);
 
 private slots:
     void handleWindowChanged(QQuickWindow *win);
@@ -50,6 +65,8 @@ private:
     qreal m_cubePositionX = 0;
     qreal m_cubePositionY = 0;
     qreal m_cubePositionZ = -5;
+    QUrl m_modelPath;
+    bool m_useCustomModel = false;
     CubeRenderer *m_renderer = nullptr;
 };
 

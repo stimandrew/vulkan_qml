@@ -126,6 +126,7 @@ qt_add_qml_module(vulkanunderqml
     QML_FILES
     SOURCES vulkanbackground.h vulkanbackground.cpp
     QML_FILES PositionController.qml
+    SOURCES model_loader.h model_loader.cpp
 )
 
 install(TARGETS vulkanunderqml

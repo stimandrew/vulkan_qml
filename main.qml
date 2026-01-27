@@ -1,9 +1,7 @@
-// Copyright (C) 2019 The Qt Company Ltd.
-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR BSD-3-Clause
-
 import QtQuick
 import QtQuick.Window 2.15
 import QtQuick.Controls 2.15
+import Qt.labs.platform 1.1 as Platform
 import VulkanUnderQML
 
 Window {
@@ -17,7 +15,7 @@ Window {
     VulkanBackground {
         id: background
         anchors.fill: parent
-        z: -1 // Помещаем фон за кубом
+        z: -1
 
         SequentialAnimation on t {
             NumberAnimation { to: 1; duration: 10000; easing.type: Easing.InOutQuad }
@@ -27,7 +25,7 @@ Window {
         }
     }
 
-    // Вращающийся куб
+    // Вращающийся 3D объект (куб или загруженная модель)
     VulkanCube {
         id: cube
         anchors.centerIn: parent
@@ -35,11 +33,19 @@ Window {
         height: 400
         z: 1
 
-        // Добавьте эти привязки:
+        // Привязки к позиции
         cubePositionX: positionController.xPosition
         cubePositionY: positionController.yPosition
         cubePositionZ: positionController.zPosition
 
+        // ИСПРАВЛЕНО: Убрана попытка доступа к m_renderer
+        Component.onCompleted: {
+            // Загрузка куба происходит автоматически при создании
+            useCustomModel = false
+            modelPath = ""
+        }
+
+        // Анимация вращения
         SequentialAnimation on t {
             NumberAnimation { to: 1; duration: 5000; easing.type: Easing.InOutQuad }
             NumberAnimation { to: 0; duration: 5000; easing.type: Easing.InOutQuad }
@@ -48,11 +54,11 @@ Window {
         }
     }
 
-    // Панель управления позицией куба
+    // Панель управления
     Rectangle {
         id: controlPanel
         width: 300
-        height: 220
+        height: 320
         color: Qt.rgba(1, 1, 1, 0.8)
         radius: 10
         border.width: 2
@@ -68,7 +74,7 @@ Window {
             spacing: 10
 
             Text {
-                text: "Панель управления кубом"
+                text: "Панель управления 3D объекта"
                 font.bold: true
                 font.pixelSize: 16
                 color: "#333"
@@ -78,6 +84,18 @@ Window {
                 width: parent.width
                 height: 1
                 color: "#ccc"
+            }
+
+            // Информация о текущей модели
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: cube.useCustomModel ?
+                      "Модель: " + (cube.modelPath.toString().split('/').pop() || "OBJ файл") :
+                      "Модель: Куб (по умолчанию)"
+                font.pixelSize: 12
+                color: "#666"
+                padding: 5
             }
 
             // Управление по оси X
@@ -98,7 +116,7 @@ Window {
                     width: parent.width - 90
                     from: -20
                     to: 20
-                    value: positionController.xPosition  // Измените начальное значение
+                    value: positionController.xPosition
                     stepSize: 0.1
                     onValueChanged: positionController.xPosition = value
                 }
@@ -130,7 +148,7 @@ Window {
                     width: parent.width - 90
                     from: -10
                     to: 10
-                    value: positionController.yPosition  // Измените начальное значение
+                    value: positionController.yPosition
                     stepSize: 0.1
                     onValueChanged: positionController.yPosition = value
                 }
@@ -160,9 +178,9 @@ Window {
                 Slider {
                     id: zSlider
                     width: parent.width - 90
-                    from: -100
-                    to: 5
-                    value: positionController.zPosition  // Измените начальное значение
+                    from: -5000
+                    to: 500
+                    value: positionController.zPosition
                     stepSize: 0.1
                     onValueChanged: positionController.zPosition = value
                 }
@@ -173,6 +191,29 @@ Window {
                     font.pixelSize: 12
                     color: "#666"
                     anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            // Кнопки управления моделью
+            Row {
+                width: parent.width
+                spacing: 10
+
+                Button {
+                    text: "Загрузить OBJ"
+                    width: (parent.width - 10) / 2
+                    onClicked: {
+                        fileDialog.open()
+                    }
+                }
+
+                Button {
+                    text: "Использовать куб"
+                    width: (parent.width - 10) / 2
+                    onClicked: {
+                        cube.useCustomModel = false
+                        cube.modelPath = ""
+                    }
                 }
             }
 
@@ -206,76 +247,87 @@ Window {
         }
     }
 
+    // Диалог выбора файла - ИСПРАВЛЕНО: убран StandardPaths
+    Platform.FileDialog {
+        id: fileDialog
+        title: "Выберите OBJ модель"
+        folder: Qt.resolvedUrl(".") // ИСПРАВЛЕНО
+        nameFilters: ["OBJ files (*.obj)", "All files (*)"]
+        onAccepted: {
+            cube.loadModel(fileDialog.file)
+        }
+    }
+
     // Контроллер позиции куба
     PositionController {
         id: positionController
     }
 
     // Кнопка переключения полноэкранного режима
-        Rectangle {
-            id: fullscreenButton
-            width: 40
-            height: 40
-            radius: 2
-            color: fullscreenMouseArea.containsMouse ? "#4444ff" : "#6666ff"
-            border.color: "white"
-            border.width: 2
+    Rectangle {
+        id: fullscreenButton
+        width: 40
+        height: 40
+        radius: 2
+        color: fullscreenMouseArea.containsMouse ? "#4444ff" : "#6666ff"
+        border.color: "white"
+        border.width: 2
 
-            anchors.top: parent.top
-            anchors.right: closeButton.left
-            anchors.margins: 10
+        anchors.top: parent.top
+        anchors.right: closeButton.left
+        anchors.margins: 10
 
-            Text {
-                text: "⛶"  // Символ полноэкранного режима
-                color: "white"
-                font.pixelSize: 16
-                font.bold: true
-                anchors.centerIn: parent
-            }
+        Text {
+            text: "⛶"
+            color: "white"
+            font.pixelSize: 16
+            font.bold: true
+            anchors.centerIn: parent
+        }
 
-            MouseArea {
-                id: fullscreenMouseArea
-                anchors.fill: parent
-                hoverEnabled: true
-                onClicked: {
-                    if (mainWindow.visibility === Window.FullScreen) {
-                        mainWindow.visibility = Window.Windowed
-                    } else {
-                        mainWindow.visibility = Window.FullScreen
-                    }
+        MouseArea {
+            id: fullscreenMouseArea
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: {
+                if (mainWindow.visibility === Window.FullScreen) {
+                    mainWindow.visibility = Window.Windowed
+                } else {
+                    mainWindow.visibility = Window.FullScreen
                 }
             }
         }
+    }
 
-        // Кнопка закрытия окна
-        Rectangle {
-            id: closeButton
-            width: 40
-            height: 40
-            radius: 2
-            color: closeMouseArea.containsMouse ? "#ff4444" : "#ff6666"
-            border.color: "white"
-            border.width: 2
+    // Кнопка закрытия окна
+    Rectangle {
+        id: closeButton
+        width: 40
+        height: 40
+        radius: 2
+        color: closeMouseArea.containsMouse ? "#ff4444" : "#ff6666"
+        border.color: "white"
+        border.width: 2
 
-            anchors.top: parent.top
-            anchors.right: parent.right
-            anchors.margins: 10
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: 10
 
-            Text {
-                text: "✕"
-                color: "white"
-                font.pixelSize: 18
-                font.bold: true
-                anchors.centerIn: parent
-            }
-
-            MouseArea {
-                id: closeMouseArea
-                anchors.fill: parent
-                hoverEnabled: true
-                onClicked: Qt.quit()
-            }
+        Text {
+            text: "✕"
+            color: "white"
+            font.pixelSize: 18
+            font.bold: true
+            anchors.centerIn: parent
         }
+
+        MouseArea {
+            id: closeMouseArea
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: Qt.quit()
+        }
+    }
 
     // Оверлей с текстом
     Rectangle {
@@ -295,6 +347,6 @@ Window {
         anchors.right: parent.right
         anchors.left: parent.left
         anchors.bottom: parent.bottom
-        anchors.margins: 20  // Упрощенная установка отступов
+        anchors.margins: 20
     }
 }
